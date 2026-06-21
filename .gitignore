@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Operating System Files
+.DS_Store
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Project Specific Data (Large log files from Loghub)
+Dataset/
