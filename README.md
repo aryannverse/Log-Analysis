@@ -87,17 +87,17 @@ Log-Analysis/
 
 ```mermaid
 flowchart TD
-    User([User]) -->|Select Dataset| Streamlit[Streamlit UI]
-    Streamlit -->|Request Chunk| Loader[data_loader.py]
-    Loader -->|Stream & Parse| Logs[(Raw Log Files)]
+    User(["User"]) -->|Select Dataset| Streamlit["Streamlit UI"]
+    Streamlit -->|Request Chunk| Loader["data_loader.py"]
+    Loader -->|Stream and Parse| Logs[("Raw Log Files")]
     Loader -->|Standardize Levels| Loader
     Loader -->|Return Records| Streamlit
-    Streamlit -->|Render Dashboard| Plotly[Plotly Chart Engine]
-    Streamlit -->|Inspect Active Log| Triage[Triage Panel]
-    Triage -->|Post Request| Ollama[Local Ollama API]
-    Ollama -->|Load qwen2.5-coder:7b| Qwen[Qwen 7B Model]
-    Qwen -->|Response format: json| Triage
-    Triage -->|Display Explanation & Fix| User
+    Streamlit -->|Render Dashboard| Plotly["Plotly Chart Engine"]
+    Streamlit -->|Inspect Active Log| Triage["Triage Panel"]
+    Triage -->|Post Request| Ollama["Local Ollama API"]
+    Ollama -->|Load Qwen Model| Qwen["Qwen 7B Model"]
+    Qwen -->|Response format json| Triage
+    Triage -->|Display Explanation and Fix| User
 ```
 
 ---
