@@ -33,6 +33,8 @@ Unlike traditional batch parsers, the application features:
 - **Large File Pagination**: Restricts memory usage to 30K line chunks, offering Next/Previous segment page controls.
 - **Clean Aesthetic**: Modern dark mode UI using Outfit typography, custom Streamlit styling, and standard tables.
 
+![Preview](Images/Preview.png)
+
 ---
 
 ## Datasets Used
@@ -85,19 +87,7 @@ Log-Analysis/
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    User["User"] -->|"Select Dataset"| Streamlit["Streamlit UI"]
-    Streamlit -->|"Request Chunk"| Loader["data_loader"]
-    Loader -->|"Stream and Parse"| Logs["Raw Log Files"]
-    Loader -->|"Return Records"| Streamlit
-    Streamlit -->|"Render Dashboard"| Plotly["Plotly Chart Engine"]
-    Streamlit -->|"Inspect Active Log"| Triage["Triage Panel"]
-    Triage -->|"Post Request"| Ollama["Local Ollama API"]
-    Ollama -->|"Load Qwen Model"| Qwen["Qwen 7B Model"]
-    Qwen -->|"Response format json"| Triage
-    Triage -->|"Display Explanation and Fix"| User
-```
+![Architecture](Images/mermaid-diagram-2026-06-21-163737%201.png)
 
 ---
 
