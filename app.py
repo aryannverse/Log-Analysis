@@ -119,7 +119,7 @@ if "Live Triage Stream" in page_choice:
 
 st.sidebar.markdown("""
 <div style="position: fixed; bottom: 20px; left: 20px; font-size: 0.8rem; color: #555577;">
-    Engine Status: <span style="color: #10b981; font-weight: bold;">Active (HF Qwen 2.5)</span>
+    Engine Status: <span style="color: #10b981; font-weight: bold;">Active (Qwen 7B)</span>
 </div>
 """, unsafe_allow_html=True)
 

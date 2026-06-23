@@ -1,6 +1,5 @@
 import streamlit as st
-import asyncio
-from data_loader import get_hf_explanation
+from data_loader import get_qwen_explanation
 
 def render_triage_stream(records, show_critical_only):
     if not records:
@@ -50,23 +49,23 @@ def render_triage_stream(records, show_critical_only):
     st.markdown("**Raw Log Payload:**")
     st.code(log_item['raw'], language="text")
 
-    coprocessor_output = asyncio.run(get_hf_explanation(log_item['raw']))
+    qwen_output = get_qwen_explanation(log_item['raw'])
 
-    status_label = "Hugging Face Qwen2.5-Coder Coprocessor Explanation"
+    status_label = "local ollama qwen2.5-coder:7b Coprocessor Explanation"
     status_state = "running"
     if log_item['is_anomaly']:
         if log_item['anomaly_type'] == 'Security Anomaly':
-            status_label = "CRITICAL VULNERABILITY EXPLAINED (Hugging Face Qwen 2.5 Coder)"
+            status_label = "CRITICAL VULNERABILITY EXPLAINED (Qwen 2.5 Coding 7B)"
             status_state = "error"
         else:
-            status_label = "EXCEPTION STACK TRACE ANALYSIS (Hugging Face Qwen 2.5 Coder)"
+            status_label = "EXCEPTION STACK TRACE ANALYSIS (Qwen 2.5 Coding 7B)"
             status_state = "running"
 
     with st.status(status_label, state=status_state, expanded=True) as status:
         st.markdown("#### **Root Cause Meaning**")
-        st.markdown(coprocessor_output['meaning'])
+        st.markdown(qwen_output['meaning'])
         st.markdown("#### **Remediation & Patch Instructions**")
-        st.markdown(coprocessor_output['fix'])
+        st.markdown(qwen_output['fix'])
         
         final_state = "error" if (log_item['is_anomaly'] and log_item['anomaly_type'] == 'Security Anomaly') else "complete"
         status.update(label=status_label, state=final_state, expanded=True)

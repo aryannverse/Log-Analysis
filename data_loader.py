@@ -2,14 +2,9 @@ import os
 import re
 import json
 import requests
-import httpx
-from dotenv import load_dotenv
 from functools import lru_cache
 from datetime import datetime, timedelta
 import pandas as pd
-
-load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 BASE_DIR = "/Users/vermaryan1/Desktop/CODING/Log Analysis/Dataset"
 APACHE_PATH = os.path.join(BASE_DIR, "Apache/Apache.log")
@@ -247,119 +242,53 @@ def load_logs(dataset_name, chunk_index=0, chunk_size=30000):
 
     return records
 
-_hf_explanation_cache = {}
-
-def clean_json_string(s):
-    s = s.strip()
-    if s.startswith("```"):
-        lines = s.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        s = "\n".join(lines).strip()
-    return s
-
-async def get_hf_explanation(raw_log):
-    if raw_log in _hf_explanation_cache:
-        return _hf_explanation_cache[raw_log]
-
-    if not HF_TOKEN or HF_TOKEN == "your_hugging_face_token_here":
-        return {
-            "meaning": "Hugging Face API token is missing or not configured.",
-            "fix": "Please create a `.env` file in the project root and set `HF_TOKEN=your_huggingface_token`."
-        }
-
-    prompt = f"""<|im_start|>system
-You are an expert security engineer and system reliability expert.
+@lru_cache(maxsize=1024)
+def get_qwen_explanation(raw_log):
+    prompt = f"""You are an expert security engineer and system reliability expert.
 Analyze the following raw log line and explain its meaning and fix.
 You must output a JSON object with exactly two keys:
 1. "meaning": A clear, human-readable explanation of the stack trace, warning, error, or vulnerability.
 2. "fix": Actionable, step-by-step remediation or patch instructions.
 
-Format:
-{{
-  "meaning": "...",
-  "fix": "..."
-}}
-<|im_end|>
-<|im_start|>user
 Raw Log:
 {raw_log}
-<|im_end|>
-<|im_start|>assistant
-"""
 
-    url = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-Coder-7B-Instruct"
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    
+JSON output:
+"""
     for attempt, timeout_sec in enumerate([30, 60], start=1):
         try:
             payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "max_new_tokens": 800,
-                    "temperature": 0.1,
-                    "return_full_text": False
-                }
+                "model": "qwen2.5-coder:7b",
+                "prompt": prompt,
+                "format": "json",
+                "stream": False
             }
-            async with httpx.AsyncClient() as client:
-                r = await client.post(url, json=payload, headers=headers, timeout=timeout_sec)
-                
+            r = requests.post("http://localhost:11434/api/generate", json=payload, timeout=timeout_sec)
             if r.status_code == 200:
                 res_data = r.json()
-                if isinstance(res_data, list) and len(res_data) > 0:
-                    response_text = res_data[0].get("generated_text", "").strip()
-                elif isinstance(res_data, dict):
-                    response_text = res_data.get("generated_text", "").strip()
-                else:
-                    response_text = ""
-                
-                try:
-                    cleaned_text = clean_json_string(response_text)
-                    parsed = json.loads(cleaned_text)
-                    meaning = parsed.get("meaning")
-                    fix = parsed.get("fix")
-                    if meaning and fix:
-                        result = {"meaning": meaning, "fix": fix}
-                        _hf_explanation_cache[raw_log] = result
-                        return result
-                except Exception:
-                    result = {
-                        "meaning": response_text,
-                        "fix": "Could not parse structured JSON from Hugging Face response. Please inspect the raw output above."
-                    }
-                    _hf_explanation_cache[raw_log] = result
-                    return result
-            elif r.status_code == 503:
-                if attempt == 1:
-                    import asyncio
-                    await asyncio.sleep(5)
-                    continue
-                else:
+                response_text = res_data.get("response", "").strip()
+                parsed = json.loads(response_text)
+                meaning = parsed.get("meaning")
+                fix = parsed.get("fix")
+                if meaning and fix:
                     return {
-                        "meaning": "Hugging Face model is currently loading on the server.",
-                        "fix": "The Serverless Inference API is starting up the model. Please wait a few seconds and try again."
+                        "meaning": meaning,
+                        "fix": fix
                     }
-            else:
-                return {
-                    "meaning": f"Hugging Face API returned error status {r.status_code}: {r.text}",
-                    "fix": "Check your HF_TOKEN permissions and ensure the Serverless Inference API is available."
-                }
-        except httpx.TimeoutException:
+        except requests.exceptions.Timeout:
             if attempt == 2:
                 return {
-                    "meaning": "Hugging Face API read timed out after multiple attempts.",
-                    "fix": "The Hugging Face server took too long to respond. Please check your internet connection or try again."
+                    "meaning": "Local Qwen model read timed out after multiple attempts.",
+                    "fix": "The local Ollama server took too long to respond. This usually happens during cold starts when loading the model into RAM/VRAM, or when the system is under heavy load. Please try refreshing or clicking 'Next' / 'Previous' to retry."
                 }
             continue
         except Exception as e:
             return {
-                "meaning": f"Error communicating with Hugging Face API: {e}",
-                "fix": "Verify that your internet connection is active and that your HF_TOKEN is valid."
+                "meaning": f"Error communicating with local Qwen model: {e}",
+                "fix": "Ensure Ollama is running locally with the qwen2.5-coder:7b model loaded."
             }
 
     return {
-        "meaning": "Unable to extract response from Hugging Face model.",
-        "fix": "Check model availability and token configuration."
+        "meaning": "Unable to extract response from Qwen model.",
+        "fix": "Check model availability and parameters."
     }
