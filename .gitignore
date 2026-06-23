@@ -15,3 +15,4 @@ env/
 
 # Project Specific Data (Large log files from Loghub)
 Dataset/
+Images/

@@ -255,30 +255,38 @@ Raw Log:
 
 JSON output:
 """
-    try:
-        payload = {
-            "model": "qwen2.5-coder:7b",
-            "prompt": prompt,
-            "format": "json",
-            "stream": False
-        }
-        r = requests.post("http://localhost:11434/api/generate", json=payload, timeout=15)
-        if r.status_code == 200:
-            res_data = r.json()
-            response_text = res_data.get("response", "").strip()
-            parsed = json.loads(response_text)
-            meaning = parsed.get("meaning")
-            fix = parsed.get("fix")
-            if meaning and fix:
+    for attempt, timeout_sec in enumerate([30, 60], start=1):
+        try:
+            payload = {
+                "model": "qwen2.5-coder:7b",
+                "prompt": prompt,
+                "format": "json",
+                "stream": False
+            }
+            r = requests.post("http://localhost:11434/api/generate", json=payload, timeout=timeout_sec)
+            if r.status_code == 200:
+                res_data = r.json()
+                response_text = res_data.get("response", "").strip()
+                parsed = json.loads(response_text)
+                meaning = parsed.get("meaning")
+                fix = parsed.get("fix")
+                if meaning and fix:
+                    return {
+                        "meaning": meaning,
+                        "fix": fix
+                    }
+        except requests.exceptions.Timeout:
+            if attempt == 2:
                 return {
-                    "meaning": meaning,
-                    "fix": fix
+                    "meaning": "Local Qwen model read timed out after multiple attempts.",
+                    "fix": "The local Ollama server took too long to respond. This usually happens during cold starts when loading the model into RAM/VRAM, or when the system is under heavy load. Please try refreshing or clicking 'Next' / 'Previous' to retry."
                 }
-    except Exception as e:
-        return {
-            "meaning": f"Error communicating with local Qwen model: {e}",
-            "fix": "Ensure Ollama is running locally with the qwen2.5-coder:7b model loaded."
-        }
+            continue
+        except Exception as e:
+            return {
+                "meaning": f"Error communicating with local Qwen model: {e}",
+                "fix": "Ensure Ollama is running locally with the qwen2.5-coder:7b model loaded."
+            }
 
     return {
         "meaning": "Unable to extract response from Qwen model.",
