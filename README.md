@@ -129,8 +129,3 @@ streamlit run app.py
 ```
 * **Dashboard Access**: Open `http://localhost:8502` in your browser.
 
----
-
-<div align="center">
-Built with focus, curiosity, and obsession by <a href="https://gitlab.com/aryannverse">aryannverse</a>
-</div>
