@@ -80,7 +80,20 @@ Log-Analysis/
 
 ## Architecture
 
-![Architecture](Images/mermaid-diagram-2026-06-21-163737%201.png)
+```mermaid
+flowchart TD
+    User([User]) -->|Upload Log File| Streamlit[Streamlit UI]
+    Streamlit -->|Extract Log Sample| Loader[data_loader.py]
+    Loader -->|Format Analysis Request| Groq[Groq API: Qwen 3.6]
+    Groq -->|Return Regex & Anomaly Keywords| Loader
+    Loader -->|Parse Log Lines chunked| Streamlit
+    Streamlit -->|Render Visualizations| Plotly[Plotly Chart Engine]
+    Streamlit -->|Filter Security Anomalies| Triage[Triage Panel]
+    Triage -->|Explain Security Anomaly| Groq
+    Groq -->|Return Root-Cause & Remediation| Triage
+    Triage -->|Display Explanation & Fix| User
+```
+
 
 ---
 
