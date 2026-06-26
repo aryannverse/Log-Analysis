@@ -5,12 +5,11 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Plotly](https://img.shields.io/badge/Plotly-Charts-3F4F75?style=for-the-badge&logo=plotly&logoColor=white)
-![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-000000?style=for-the-badge)
-![Qwen](https://img.shields.io/badge/Qwen-7B%20Model-1A73E8?style=for-the-badge)
+![Groq](https://img.shields.io/badge/Groq-Qwen%203.6-F55F45?style=for-the-badge)
 
 </div>
 
-An interactive, high-performance log analysis dashboard and real-time anomaly triage pipeline powered by a locally deployed Qwen 2.5 Coding 7B model.
+An interactive, high-performance log analysis dashboard and real-time anomaly triage pipeline powered by Groq's Qwen 3.6 API.
 
 ---
 
@@ -19,39 +18,30 @@ An interactive, high-performance log analysis dashboard and real-time anomaly tr
 This platform processes raw log files from massive cloud infrastructure datasets and feeds security and exception events directly into a locally run LLM coprocessor. 
 
 Unlike traditional batch parsers, the application features:
-- **Memory-Efficient Chunk Parsing**: Streams logs line-by-line using file seeking to handle gigabyte-scale datasets (like HDFS.log) without causing memory exhaustion.
-- **Local LLM Coprocessor**: Sends raw log messages to a locally running Qwen 2.5 Coder 7B model via Ollama's REST API for explainability and remediation instructions.
-- **Interactive Triage Feed**: Enables operators to scroll sequentially through anomalies with interactive next/previous steps.
+- **Dynamic Format Analyzer**: Analyzes any uploaded dataset sample via Groq's Qwen 3.6 API to dynamically extract the format type, regex schema, and custom security/anomaly keyword lists.
+- **Memory-Efficient Chunk Parsing**: Streams logs line-by-line using file seeking to handle large-scale datasets (up to 500 MB upload limit) without causing memory exhaustion.
+- **Cloud LLM Coprocessor**: Sends raw log messages to Groq's Qwen 3.6 API for explainability and remediation instructions.
+- **Filtered Triage Feed**: Displays only security anomalies one by one, allowing operators to analyze vulnerabilities sequentially.
 
 ---
 
 ## Key Features
 
-- **Multi-Dataset Support**: Parse and query logs from HDFS, Apache Web Server, and OpenStack deployment modules.
+- **Dynamic File Uploader**: Drag and drop any `.log`, `.txt`, `.csv`, or `.pdf` file up to 500 MB.
+- **Automated Regex Parsing**: Leverages LLM format extraction to generate matching Python regex patterns and parse custom logs dynamically.
 - **Analytics Dashboard**: Renders distribution donut charts, component frequencies, and log level time-series using Plotly.
-- **Local Qwen 2.5 Coder Integration**: Connects to the local Ollama daemon for analysis, with structured JSON responses and caching for performance.
-- **Large File Pagination**: Restricts memory usage to 30K line chunks, offering Next/Previous segment page controls.
+- **Groq API Integration**: Connects to the Groq REST API using native JSON mode to guarantee structured explanations.
 - **Clean Aesthetic**: Modern dark mode UI using Outfit typography, custom Streamlit styling, and standard tables.
-
-![Preview](Images/Preview.png)
 
 ---
 
-## Datasets Used
+## How It Works
 
-This application parses actual production log datasets sourced from the [Loghub Repository](https://github.com/logpai/loghub):
+1. **Log Sample Extraction**: When a file is uploaded, the app extracts a small sample and sends it to the Groq Qwen 3.6 API.
+2. **Schema Determination**: The API returns a JSON configuration containing a Python regex pattern with named groups (`level`, `message`, `timestamp`, `component`), along with tailored anomaly/security keywords.
+3. **Chunked Parsing**: The application parses the remaining log file using the generated regex, falling back to raw message parsing if a line doesn't match the regex.
+4. **Vulnerability Triage**: The Live Triage stream filters the parsed logs to show only the security anomalies detected based on the custom security keywords.
 
-1. **HDFS Logs**: 
-   - **Where**: Loaded from `Dataset/HDFS/HDFS_v1/HDFS.log`.
-   - **Why**: Represents large-scale distributed system events (1.5GB total size). Used to identify block allocation cycles, connection failures, under-replication events, and file write exceptions.
-
-2. **Apache Web Server Logs**:
-   - **Where**: Loaded from `Dataset/Apache/Apache.log`.
-   - **Why**: Access and error records showing standard client requests. Used to detect security exploits like directory traversal attempts (`../`) and long URI buffer overflow vectors.
-
-3. **OpenStack Cluster Logs**:
-   - **Where**: Loaded from `Dataset/OpenStack/openstack_abnormal.log`.
-   - **Why**: Virtual machine orchestration records. Used to isolate VM lifecycle failures by cross-referencing injected anomaly instances listed in `anomaly_labels.txt`.
 
 ---
 
@@ -60,7 +50,7 @@ This application parses actual production log datasets sourced from the [Loghub 
 ### Processing & Core Logic
 - `Pandas`
 - `Requests`
-- `Ollama API` (via native HTTP requests)
+- `Groq API` (via native REST requests)
 - `Python-dateutil`
 
 ### Dashboard & Visualizations
@@ -76,9 +66,12 @@ Log-Analysis/
 ├── components/
 │   ├── dashboard.py     # Plotly analytics visualization grids
 │   └── triage.py        # Live log triage panel and status handlers
-├── Dataset/             # Raw log directory containing datasets (excluded from Git)
 ├── app.py               # Main application routing and sidebar controller
-├── data_loader.py       # Regex log layout parsers and Ollama API connector
+├── data_loader.py       # Regex log layout parsers and Groq API connector
+├── config.py            # Local default regexes and anomaly configurations
+├── Dockerfile           # Multi-stage lightweight docker configuration
+├── .dockerignore        # Exclusions for docker build context
+├── requirements.txt     # Python application dependency declarations
 ├── .gitignore           # Git ignore declarations
 └── README.md            # Technical documentation
 ```
@@ -91,28 +84,45 @@ Log-Analysis/
 
 ---
 
-## Local Setup
+## Local Setup & Deployment
 
-### 1) Run the Local Qwen Model
-Ensure you have [Ollama](https://ollama.com/) installed and running in the background. Pull the model:
+### 1) Configure API Key
+Create a `.env` file in the root directory:
 ```bash
-ollama pull qwen2.5-coder:7b
+cp .env.example .env
 ```
+Open `.env` and set your `GROQ_API_KEY` obtained from the [Groq Console](https://console.groq.com/).
 
-### 2) Clone and Prepare Environment
-```bash
-git clone https://gitlab.com/aryannverse/log-analysis-application.git
-cd log-analysis-application
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+### Option A: Running with Docker (Recommended)
+You can build and run the entire application cleanly using Docker:
 
-### 3) Run the Streamlit Application
-```bash
-streamlit run app.py
-```
-* **Dashboard Access**: Open `http://localhost:8501` in your browser.
+1. **Build the Docker Image**:
+   ```bash
+   docker build -t log-analysis-app .
+   ```
+2. **Run the Docker Container**:
+   ```bash
+   docker run -p 8501:8501 --env-file .env --name log-analysis-app log-analysis-app
+   ```
+3. **Access the Application**:
+   Open **`http://localhost:8501`** in your browser.
+
+### Option B: Local Manual Setup
+
+1. **Clone and Prepare Environment**:
+   ```bash
+   git clone https://gitlab.com/aryannverse/log-analysis-application.git
+   cd log-analysis-application
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. **Run the Streamlit Application**:
+   ```bash
+   streamlit run app.py
+   ```
+   Open **`http://localhost:8501`** in your browser.
 
 ---
 

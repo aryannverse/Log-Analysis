@@ -1,19 +1,14 @@
 import streamlit as st
-from data_loader import get_qwen_explanation
+from data_loader import get_groq_explanation
 
-def render_triage_stream(records, show_critical_only):
+def render_triage_stream(records):
     if not records:
         st.warning("No logs loaded to triage.")
         return
-
-    if show_critical_only:
-        filtered_records = [r for r in records if r['is_anomaly'] and r['anomaly_type'] == 'Security Anomaly']
-    else:
-        filtered_records = records
-
+    filtered_records = [r for r in records if r.get("is_anomaly") and r.get("anomaly_type") == "Security Anomaly"]
     total_filtered = len(filtered_records)
     if total_filtered == 0:
-        st.info("No logs match the current filters.")
+        st.info("No security anomalies found in this dataset.")
         return
 
     state_key = "triage_index"
@@ -27,6 +22,9 @@ def render_triage_stream(records, show_critical_only):
 
     current_idx = st.session_state[state_key]
     log_item = filtered_records[current_idx]
+
+
+
 
     col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
     
@@ -49,23 +47,24 @@ def render_triage_stream(records, show_critical_only):
     st.markdown("**Raw Log Payload:**")
     st.code(log_item['raw'], language="text")
 
-    qwen_output = get_qwen_explanation(log_item['raw'])
+    with st.spinner("Analyzing log with Groq Qwen 3.6..."):
+        groq_output = get_groq_explanation(log_item['raw'])
 
-    status_label = "local ollama qwen2.5-coder:7b Coprocessor Explanation"
+    status_label = "Groq Qwen 3.6 Coprocessor Explanation"
     status_state = "running"
     if log_item['is_anomaly']:
         if log_item['anomaly_type'] == 'Security Anomaly':
-            status_label = "CRITICAL VULNERABILITY EXPLAINED (Qwen 2.5 Coding 7B)"
+            status_label = "CRITICAL VULNERABILITY EXPLAINED (Groq Qwen 3.6)"
             status_state = "error"
         else:
-            status_label = "EXCEPTION STACK TRACE ANALYSIS (Qwen 2.5 Coding 7B)"
+            status_label = "EXCEPTION STACK TRACE ANALYSIS (Groq Qwen 3.6)"
             status_state = "running"
 
     with st.status(status_label, state=status_state, expanded=True) as status:
         st.markdown("#### **Root Cause Meaning**")
-        st.markdown(qwen_output['meaning'])
+        st.markdown(groq_output.get('meaning', 'No meaning extracted.'))
         st.markdown("#### **Remediation & Patch Instructions**")
-        st.markdown(qwen_output['fix'])
+        st.markdown(groq_output.get('fix', 'No remediation instructions provided.'))
         
         final_state = "error" if (log_item['is_anomaly'] and log_item['anomaly_type'] == 'Security Anomaly') else "complete"
         status.update(label=status_label, state=final_state, expanded=True)

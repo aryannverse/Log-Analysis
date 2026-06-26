@@ -2,293 +2,389 @@ import os
 import re
 import json
 import requests
+import time
 from functools import lru_cache
-from datetime import datetime, timedelta
 import pandas as pd
+import pypdf
+from config import DEFAULT_REGEXES, DEFAULT_ANOMALIES
 
-BASE_DIR = "/Users/vermaryan1/Desktop/CODING/Log Analysis/Dataset"
-APACHE_PATH = os.path.join(BASE_DIR, "Apache/Apache.log")
-HDFS_PATH = os.path.join(BASE_DIR, "HDFS/HDFS_v1/HDFS.log")
-OPENSTACK_PATH = os.path.join(BASE_DIR, "OpenStack/openstack_abnormal.log")
-OPENSTACK_ANOMALY_LABELS_PATH = os.path.join(BASE_DIR, "OpenStack/anomaly_labels.txt")
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-HDFS_REGEX = re.compile(r"^(\d{6})\s+(\d{6})\s+(\d+)\s+(\w+)\s+([^:]+):\s*(.*)$")
-APACHE_REGEX = re.compile(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$")
-OPENSTACK_REGEX = re.compile(r"^(\S+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\d+)\s+(\w+)\s+(\S+)\s+\[([^\]]*)\]\s+(.*)$")
-
-def get_openstack_anomalies():
-    anomalies = set()
-    if os.path.exists(OPENSTACK_ANOMALY_LABELS_PATH):
+def extract_and_parse_json(text):
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    if '<think>' in text:
+        text = text.split('<think>')[0]
+    text = text.strip()
+    
+    start_idx = text.find('{')
+    end_idx = text.rfind('}')
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        json_str = text[start_idx:end_idx+1]
         try:
-            with open(OPENSTACK_ANOMALY_LABELS_PATH, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("The following"):
-                        anomalies.add(line)
+            return json.loads(json_str, strict=False)
         except Exception:
             pass
-    if not anomalies:
-        anomalies = {
-            "544fd51c-4edc-4780-baae-ba1d80a0acfc",
-            "ae651dff-c7ad-43d6-ac96-bbcd820ccca8",
-            "a445709b-6ad0-40ec-8860-bec60b6ca0c2",
-            "1643649d-2f42-4303-bfcd-7798baec19f9"
-        }
-    return anomalies
-
-OPENSTACK_ANOMALIES = get_openstack_anomalies()
-
-def parse_hdfs_line(line, line_num):
-    match = HDFS_REGEX.match(line)
-    if not match:
-        return None
-    
-    date_str, time_str, thread_id, level, component, message = match.groups()
-    
-    try:
-        dt = datetime.strptime(f"{date_str} {time_str}", "%y%m%d %H%M%S")
-        timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        timestamp = f"2008-11-09 {time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
-
-    level = level.upper()
-    if level not in ["INFO", "WARN", "WARNING", "ERROR", "CRITICAL", "FATAL"]:
-        level = "INFO"
-    if level == "WARNING":
-        level = "WARN"
-    elif level == "FATAL":
-        level = "CRITICAL"
-
-    is_anomaly = False
-    anomaly_type = "System Bug"
-    
-    msg_lower = message.lower()
-    if any(k in msg_lower for k in ["accesscontrolexception", "unauthorized", "permission denied", "verification failed"]):
-        is_anomaly = True
-        anomaly_type = "Security Anomaly"
-    elif "missing" in msg_lower and "block" in msg_lower:
-        is_anomaly = True
-        anomaly_type = "Security Anomaly"
-    elif level in ["ERROR", "CRITICAL"]:
-        is_anomaly = True
-        anomaly_type = "System Bug"
-
-    return {
-        "index": line_num,
-        "timestamp": timestamp,
-        "level": level,
-        "component": component.strip(),
-        "message": message.strip(),
-        "raw": line.strip(),
-        "is_anomaly": is_anomaly,
-        "anomaly_type": anomaly_type
-    }
-
-def parse_apache_line(line, line_num):
-    match = APACHE_REGEX.match(line)
-    if not match:
-        return None
-    
-    time_str, level, rest = match.groups()
-    
-    try:
-        dt = datetime.strptime(time_str, "%a %b %d %H:%M:%S %Y")
-        timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        timestamp = time_str
-
-    level = level.lower()
-    if "error" in level:
-        level_mapped = "ERROR"
-    elif "notice" in level:
-        level_mapped = "INFO"
-    elif "warn" in level:
-        level_mapped = "WARN"
-    elif "crit" in level or "emerg" in level or "alert" in level:
-        level_mapped = "CRITICAL"
-    else:
-        level_mapped = "INFO"
-
-    component = "core"
-    message = rest
-    
-    client_match = re.match(r"^\[client\s+([^\]]+)\]\s+(.*)$", rest)
-    if client_match:
-        client_ip, message = client_match.groups()
-        component = f"client:{client_ip}"
-    else:
-        comp_match = re.match(r"^([^:\s]+(?:\(\))?):?\s+(.*)$", rest)
-        if comp_match:
-            comp_candidate, msg_candidate = comp_match.groups()
-            if len(comp_candidate) < 30 and "/" not in comp_candidate:
-                component = comp_candidate
-                message = msg_candidate
-
-    is_anomaly = False
-    anomaly_type = "System Bug"
-    msg_lower = message.lower()
-    
-    if any(k in msg_lower for k in ["../", "uri too long", "mod_security", "script not found", "authentication failed", "invalid user", "forbidden", "union select", "nmap"]):
-        is_anomaly = True
-        anomaly_type = "Security Anomaly"
-    elif level_mapped in ["ERROR", "CRITICAL"]:
-        is_anomaly = True
-        anomaly_type = "System Bug"
-
-    return {
-        "index": line_num,
-        "timestamp": timestamp,
-        "level": level_mapped,
-        "component": component.strip(),
-        "message": message.strip(),
-        "raw": line.strip(),
-        "is_anomaly": is_anomaly,
-        "anomaly_type": anomaly_type
-    }
-
-def parse_openstack_line(line, line_num):
-    match = OPENSTACK_REGEX.match(line)
-    if not match:
-        return None
-    
-    log_src, time_str, pid, level, component, req_context, message = match.groups()
-    
-    try:
-        if "." in time_str:
-            dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S.%f")
-        else:
-            dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-        timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        timestamp = time_str
-
-    level = level.upper()
-    if level not in ["INFO", "WARN", "WARNING", "ERROR", "CRITICAL", "FATAL"]:
-        level = "INFO"
-    if level == "WARNING":
-        level = "WARN"
-    elif level == "FATAL":
-        level = "CRITICAL"
-
-    is_anomaly = False
-    anomaly_type = "System Bug"
-    
-    has_anomaly_vm = False
-    for vm_id in OPENSTACK_ANOMALIES:
-        if vm_id in line:
-            has_anomaly_vm = True
-            break
             
-    msg_lower = message.lower()
-    if has_anomaly_vm:
-        is_anomaly = True
-        anomaly_type = "Security Anomaly"
-    elif any(k in msg_lower for k in ["unauthorized", "forbidden", "policy check failed", "access denied"]):
-        is_anomaly = True
-        anomaly_type = "Security Anomaly"
-    elif level in ["ERROR", "CRITICAL"]:
-        is_anomaly = True
-        anomaly_type = "System Bug"
-
-    return {
-        "index": line_num,
-        "timestamp": timestamp,
-        "level": level,
-        "component": component.strip(),
-        "message": message.strip(),
-        "raw": line.strip(),
-        "is_anomaly": is_anomaly,
-        "anomaly_type": anomaly_type
-    }
-
-def load_logs(dataset_name, chunk_index=0, chunk_size=30000):
-    records = []
-    
-    if dataset_name == "HDFS":
-        file_path = HDFS_PATH
-        parse_func = parse_hdfs_line
-    elif dataset_name == "Apache":
-        file_path = APACHE_PATH
-        parse_func = parse_apache_line
-    elif dataset_name == "OpenStack":
-        file_path = OPENSTACK_PATH
-        parse_func = parse_openstack_line
-    else:
-        raise ValueError(f"Unknown dataset name: {dataset_name}")
-
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Log file not found at: {file_path}")
-
-    start_line_idx = chunk_index * chunk_size
-
+    meaning_match = re.search(r'"meaning"\s*:\s*"(.*?)"', text, re.DOTALL)
+    fix_match = re.search(r'"fix"\s*:\s*"(.*?)"', text, re.DOTALL)
+    if meaning_match and fix_match:
+        meaning_str = meaning_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        fix_str = fix_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        return {
+            "meaning": meaning_str,
+            "fix": fix_str
+        }
+        
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            line_num = 1
-            parsed_count = 0
-            for line in f:
-                if line_num <= start_line_idx:
-                    line_num += 1
-                    continue
-                
-                parsed = parse_func(line, line_num)
-                if parsed:
-                    records.append(parsed)
-                    parsed_count += 1
-                line_num += 1
-                if parsed_count >= chunk_size:
-                    break
+        return json.loads(text, strict=False)
     except Exception as e:
-        raise e
+        return {
+            "meaning": f"JSON Parse Error: {e}. Raw Response content: {text}",
+            "fix": "Try refreshing or reloading this log entry to generate a new analysis."
+        }
 
-    return records
+API_KEY = os.environ.get("GROQ_API_KEY")
 
 @lru_cache(maxsize=1024)
-def get_qwen_explanation(raw_log):
+def get_groq_explanation(raw_log):
+    if not API_KEY:
+        return {
+            "meaning": "GROQ_API_KEY is not set in the environment.",
+            "fix": "Please create a .env file and set GROQ_API_KEY=your_groq_api_key_here."
+        }
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    
     prompt = f"""You are an expert security engineer and system reliability expert.
 Analyze the following raw log line and explain its meaning and fix.
 You must output a JSON object with exactly two keys:
 1. "meaning": A clear, human-readable explanation of the stack trace, warning, error, or vulnerability.
 2. "fix": Actionable, step-by-step remediation or patch instructions.
 
+Return ONLY the raw JSON object. Do not wrap the output in markdown code blocks (such as ```json or ```). Do not include any text outside the JSON object.
+
 Raw Log:
 {raw_log}
-
-JSON output:
 """
-    for attempt, timeout_sec in enumerate([30, 60], start=1):
-        try:
-            payload = {
-                "model": "qwen2.5-coder:7b",
-                "prompt": prompt,
-                "format": "json",
-                "stream": False
+    
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "qwen/qwen3.6-27b",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
             }
-            r = requests.post("http://localhost:11434/api/generate", json=payload, timeout=timeout_sec)
+        ],
+        "max_tokens": 3000
+    }
+    
+    for attempt in range(1, 5):
+        timeout_sec = 60
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
             if r.status_code == 200:
                 res_data = r.json()
-                response_text = res_data.get("response", "").strip()
-                parsed = json.loads(response_text)
-                meaning = parsed.get("meaning")
-                fix = parsed.get("fix")
-                if meaning and fix:
+                choices = res_data.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "").strip()
+                    parsed = extract_and_parse_json(content)
+                    meaning = parsed.get("meaning")
+                    fix = parsed.get("fix")
+                    if meaning and fix and "JSON Parse Error" not in meaning:
+                        return {
+                            "meaning": meaning,
+                            "fix": fix
+                        }
                     return {
-                        "meaning": meaning,
-                        "fix": fix
+                        "meaning": f"JSON Parse Error. Content was: '{content}'. Parsed object: {parsed}",
+                        "fix": "Please check the debug content above."
                     }
-        except requests.exceptions.Timeout:
-            if attempt == 2:
                 return {
-                    "meaning": "Local Qwen model read timed out after multiple attempts.",
-                    "fix": "The local Ollama server took too long to respond. This usually happens during cold starts when loading the model into RAM/VRAM, or when the system is under heavy load. Please try refreshing or clicking 'Next' / 'Previous' to retry."
+                    "meaning": "Invalid response format from Groq API.",
+                    "fix": "Please check the log format and try again."
                 }
+            elif r.status_code == 429:
+                retry_after = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                try:
+                    sleep_time = float(retry_after) if retry_after else (2 ** attempt)
+                except ValueError:
+                    sleep_time = 2 ** attempt
+                sleep_time = min(sleep_time, 15.0)
+                time.sleep(sleep_time)
+                continue
+            elif r.status_code in [401, 403]:
+                return {
+                    "meaning": "Authentication/Permission error with Groq API.",
+                    "fix": "Please verify your GROQ_API_KEY is correct and active."
+                }
+            else:
+                try:
+                    err_msg = r.json().get("error", {}).get("message", r.text)
+                except Exception:
+                    err_msg = r.text
+                return {
+                    "meaning": f"Groq API returned error code {r.status_code}: {err_msg}",
+                    "fix": "Verify network status and API key configuration."
+                }
+        except requests.exceptions.Timeout:
+            if attempt == 4:
+                return {
+                    "meaning": "Groq API read timed out after multiple attempts.",
+                    "fix": "The connection timed out. Please check your internet connection and verify Groq service status."
+                }
+            time.sleep(1.0)
             continue
         except Exception as e:
             return {
-                "meaning": f"Error communicating with local Qwen model: {e}",
-                "fix": "Ensure Ollama is running locally with the qwen2.5-coder:7b model loaded."
+                "meaning": f"Error communicating with Groq API: {e}",
+                "fix": "Ensure your internet connection is working and GROQ_API_KEY is configured."
             }
-
+ 
     return {
-        "meaning": "Unable to extract response from Qwen model.",
-        "fix": "Check model availability and parameters."
+        "meaning": "Unable to extract response from Groq model due to rate limit/timeout.",
+        "fix": "Check model availability, tokens per minute (TPM) limit, or wait a few seconds and try again."
     }
+
+def analyze_dataset_format(sample_text):
+    if not API_KEY:
+        return None
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    prompt = f"""You are an expert log parser and system reliability engineer.
+Analyze the following sample content from an uploaded dataset file and generate a parsing configuration.
+You must output a JSON object with exactly the following keys:
+1. "file_type": Either "csv", "json", "pdf", or "text".
+2. "regex": A python regular expression pattern to parse log lines (if file_type is "text" or "pdf" or "csv"), or null. It must capture named groups: 'timestamp' (if available), 'level' (if available), 'component' (if available), and 'message'. E.g. r"^(\\d{{4}}-\\d{{2}}-\\d{{2}})\\s+(\\S+)\\s+(?P<level>\\w+)\\s+(?P<message>.*)$"
+3. "columns": List of column names to parse (if file_type is "csv"), or null.
+4. "anomaly_keywords": List of lowercase strings indicating a system bug/anomaly.
+5. "security_keywords": List of lowercase strings indicating a security vulnerability/risk.
+6. "timestamp_format": A python datetime format string (e.g. "%Y-%m-%d %H:%M:%S") or null.
+
+Sample Content:
+{sample_text}
+"""
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "qwen/qwen3.6-27b",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "max_tokens": 3000
+    }
+    for attempt in range(1, 5):
+        timeout_sec = 60
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+            if r.status_code == 200:
+                res_data = r.json()
+                choices = res_data.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "").strip()
+                    parsed = extract_and_parse_json(content)
+                    if parsed and isinstance(parsed, dict) and "meaning" not in parsed:
+                        return parsed
+            elif r.status_code == 429:
+                retry_after = r.headers.get("retry-after") or r.headers.get("Retry-After")
+                try:
+                    sleep_time = float(retry_after) if retry_after else (2 ** attempt)
+                except ValueError:
+                    sleep_time = 2 ** attempt
+                sleep_time = min(sleep_time, 15.0)
+                time.sleep(sleep_time)
+                continue
+            elif r.status_code in [401, 403]:
+                import sys
+                sys.stderr.write(f"Authentication/Permission error with Groq API: {r.status_code}\n")
+                return None
+            else:
+                import sys
+                sys.stderr.write(f"Groq API returned status code {r.status_code}\n")
+        except requests.exceptions.Timeout:
+            if attempt == 4:
+                import sys
+                sys.stderr.write("Groq API read timed out after multiple attempts.\n")
+                return None
+            time.sleep(1.0)
+            continue
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"Error communicating with Groq API: {e}\n")
+            time.sleep(1.0)
+            continue
+    return None
+
+def parse_dynamic_log_line(line, line_num, config):
+    if not line.strip():
+        return None
+    pattern_str = config.get("regex")
+    if not pattern_str:
+        is_anomaly = False
+        anomaly_type = "System Bug"
+        msg_lower = line.strip().lower()
+        sec_kw = config.get("security_keywords") or []
+        bug_kw = config.get("anomaly_keywords") or []
+        if any(k in msg_lower for k in sec_kw):
+            is_anomaly = True
+            anomaly_type = "Security Anomaly"
+        elif any(k in msg_lower for k in bug_kw):
+            is_anomaly = True
+            anomaly_type = "System Bug"
+        return {
+            "index": line_num,
+            "timestamp": "",
+            "level": "INFO",
+            "component": "",
+            "message": line.strip(),
+            "raw": line.strip(),
+            "is_anomaly": is_anomaly,
+            "anomaly_type": anomaly_type
+        }
+    try:
+        pattern = re.compile(pattern_str)
+        match = pattern.match(line)
+    except Exception:
+        match = None
+    if not match:
+        is_anomaly = False
+        anomaly_type = "System Bug"
+        msg_lower = line.strip().lower()
+        sec_kw = config.get("security_keywords") or []
+        bug_kw = config.get("anomaly_keywords") or []
+        if any(k in msg_lower for k in sec_kw):
+            is_anomaly = True
+            anomaly_type = "Security Anomaly"
+        elif any(k in msg_lower for k in bug_kw):
+            is_anomaly = True
+            anomaly_type = "System Bug"
+        return {
+            "index": line_num,
+            "timestamp": "",
+            "level": "INFO",
+            "component": "",
+            "message": line.strip(),
+            "raw": line.strip(),
+            "is_anomaly": is_anomaly,
+            "anomaly_type": anomaly_type
+        }
+    groups = match.groupdict()
+    timestamp = groups.get("timestamp") or ""
+    level = (groups.get("level") or "INFO").upper()
+    component = groups.get("component") or ""
+    message = groups.get("message") or ""
+    if not message and not component and not level:
+        message = line.strip()
+    is_anomaly = False
+    anomaly_type = "System Bug"
+    msg_lower = message.lower()
+    sec_kw = config.get("security_keywords") or []
+    bug_kw = config.get("anomaly_keywords") or []
+    if any(k in msg_lower for k in sec_kw):
+        is_anomaly = True
+        anomaly_type = "Security Anomaly"
+    elif any(k in msg_lower for k in bug_kw) or level in ["ERROR", "CRITICAL", "FATAL"]:
+        is_anomaly = True
+        anomaly_type = "System Bug"
+    return {
+        "index": line_num,
+        "timestamp": timestamp,
+        "level": level,
+        "component": component,
+        "message": message,
+        "raw": line.strip(),
+        "is_anomaly": is_anomaly,
+        "anomaly_type": anomaly_type
+    }
+
+def load_uploaded_file(uploaded_file, config):
+    filename = uploaded_file.name.lower()
+    records = []
+    
+    if filename.endswith(".pdf"):
+        try:
+            reader = pypdf.PdfReader(uploaded_file)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            lines = text.splitlines()
+            line_num = 1
+            for line in lines:
+                if len(records) >= 50000:
+                    break
+                parsed = parse_dynamic_log_line(line, line_num, config)
+                if parsed:
+                    records.append(parsed)
+                    line_num += 1
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"Error parsing PDF: {e}\n")
+            
+    elif filename.endswith(".csv"):
+        try:
+            df = pd.read_csv(uploaded_file)
+            for idx, row in df.iterrows():
+                if idx >= 50000:
+                    break
+                message = str(row.get("message", row.get("Message", "")))
+                level = str(row.get("level", row.get("Level", "INFO"))).upper()
+                timestamp = str(row.get("timestamp", row.get("Timestamp", "")))
+                component = str(row.get("component", row.get("Component", "")))
+                
+                is_anomaly = False
+                anomaly_type = "System Bug"
+                msg_lower = message.lower()
+                
+                sec_kw = config.get("security_keywords") or []
+                bug_kw = config.get("anomaly_keywords") or []
+                
+                if any(k in msg_lower for k in sec_kw):
+                    is_anomaly = True
+                    anomaly_type = "Security Anomaly"
+                elif any(k in msg_lower for k in bug_kw) or level in ["ERROR", "CRITICAL", "FATAL"]:
+                    is_anomaly = True
+                    anomaly_type = "System Bug"
+                    
+                records.append({
+                    "index": idx + 1,
+                    "timestamp": timestamp,
+                    "level": level,
+                    "component": component,
+                    "message": message,
+                    "raw": ", ".join(f"{col}: {val}" for col, val in row.items()),
+                    "is_anomaly": is_anomaly,
+                    "anomaly_type": anomaly_type
+                })
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"Error parsing CSV: {e}\n")
+            
+    else:
+        try:
+            content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+            lines = content.splitlines()
+            line_num = 1
+            for line in lines:
+                if len(records) >= 50000:
+                    break
+                parsed = parse_dynamic_log_line(line, line_num, config)
+                if parsed:
+                    records.append(parsed)
+                    line_num += 1
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"Error parsing text file: {e}\n")
+            
+    return records
